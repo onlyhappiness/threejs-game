@@ -7,12 +7,15 @@ import {OrbitControls} from 'https://cdn.jsdelivr.net/npm/three@0.118/examples/j
 // vertex shader
 // 위치를 지정하고 점의 크기를 설정
 const _VS = `
+
 uniform float pointMultiplier;
 
 attribute float size;
+attribute float angle;
 attribute vec4 colour;
 
 varying vec4 vColour;
+varying vec2 vAngle;
 
 void main() {
   vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
@@ -20,19 +23,58 @@ void main() {
   gl_Position = projectionMatrix * mvPosition;
   gl_PointSize =  size * pointMultiplier / gl_Position.w;
 
+  vAngle = vec2(cos(angle), sin(angle));
   vColour = colour;
 }`;
 
 // fragment shader
 // 모든 작업이 완료되면 로드
 const _FS = `
+
 uniform sampler2D diffuseTexture;
 
 varying vec4 vColour;
+varying vec2 vAngle;
 
 void main() {
-  gl_FragColor = texture2D(diffuseTexture, gl_PointCoord) * vColour;
+  vec2 coords = (gl_PointCoord - 0.5) * mat2(vAngle.x, vAngle.y, -vAngle.y, vAngle.x) + 0.5;
+  gl_FragColor = texture2D(diffuseTexture, coords) * vColour;
 }`;
+
+// LinearSpline 클래스 생성
+// 특정 지점에 입자 생성 및 수명시간(life) 계산
+class LinearSpline {
+  constructor(lerp) {
+    this._points = [];
+    this._lerp = lerp;
+  }
+
+  AddPoint(t, d) {
+    this._points.push([t, d]);
+  }
+
+  Get(t) {
+    let p1 = 0;
+  
+    for (let i=0; i<this._points.length; i++) {
+      if (this._points[i][0] >= t) {
+        break;
+      }
+      p1 = i;
+    }
+
+    const p2 = Math.min(this._points.length - 1, p1 + 1);
+
+    if (p1 == p2) {
+      return this._points[p1][1];
+    }
+
+    return this._lerp(
+      (t - this._points[p1][0]) / (
+          this._points[p2][0] - this._points[p1][0]),
+      this._points[p1][1], this._points[p2][1]);
+  }
+}
 
 
 // ParticleSystem 클래스 정의
@@ -52,7 +94,7 @@ class ParticleSystem {
       uniforms: uniforms,
       vertexShader: _VS,
       fragmentShader: _FS,
-      blending: THREE.NormalBlending,
+      blending: THREE.CustomBlending,
       depthTest: true,
       depthWrite: false,
       transparent: true,
@@ -70,21 +112,53 @@ class ParticleSystem {
     this._geometry.setAttribute('size', new THREE.Float32BufferAttribute([], 1));
     // 색상 변형
     this._geometry.setAttribute('colour', new THREE.Float32BufferAttribute([],3));
+    // particle angle 업데이트
+    this._geometry.setAttribute('angle', new THREE.Float32BufferAttribute([], 1));
     
     // 데이터를 렌더링 할 포인트 목록
     this._points = new THREE.Points(this._geometry, this._material);
 
     params.parent.add(this._points);
 
+    this._alphaSpline = new LinearSpline((t, a, b) => {
+      return a + t * (b - a);
+    });
+    this._alphaSpline.AddPoint(0.0, 0.0);
+    this._alphaSpline.AddPoint(0.1, 1.0);
+    this._alphaSpline.AddPoint(0.5, 1.0);
+    this._alphaSpline.AddPoint(1.0, 0.0);
+
+    this._colourSpline = new LinearSpline((t, a, b) => {
+      const c = a.clone();
+      return c.lerp(b, t);
+    });
+    this._colourSpline.AddPoint(0.0, new THREE.Color(0xFF0000));
+    this._colourSpline.AddPoint(0.0, new THREE.Color(0xFF0000));
+    this._colourSpline.AddPoint(0.0, new THREE.Color(0xFF0000));
+    this._colourSpline.AddPoint(0.0, new THREE.Color(0xFF0000));
+    this._colourSpline.AddPoint(0.0, new THREE.Color(0xFF0000));
+    this._colourSpline.AddPoint(0.0, new THREE.Color(0xFF0000));
+
+    document.addEventListener('keyup', (e) => this._onKeyUp(e), false);
+    
     this._AddParticles();
     this._UpdateGeometry();
+  }
+
+  // 키 이벤트
+  _onKeyUp(event) {
+    switch(event.keyCode) {
+      case 32: // space
+        this._AddParticles();
+        break;
+    }
   }
 
   // particle 추가 함수
   _AddParticles(timeElapsed) {
     // 10개의 입자를 만들어서 각각 임의의 위치에서 시작
-    for (let i=0; i<10; i++) {
-      const life = (Math.random() * 0.75 + 0.25) * 10.0;
+    for (let i=0; i<20; i++) {
+      //const life = (Math.random() * 0.75 + 0.25) * 10.0;
       this._particles.push({
         position: new THREE.Vector3(
           (Math.random() * 2 - 1) * 1.0,
@@ -95,6 +169,8 @@ class ParticleSystem {
         // rgb를 랜덤화하여 색상 변경
         colour: new THREE.Color(Math.random(), Math.random(), Math.random()),
         alpha: Math.random(),
+        life: 5.0, 
+        rotation: Math.random() * 2.0 * Math.PI,
       });
     }
   }
@@ -108,12 +184,15 @@ class ParticleSystem {
     const sizes = [];
     // 색상 배열
     const colours = [];
+    // 입자를 회전시키기 위한 배열
+    const angles = [];
 
     // 입자 분리
     for (let p of this._particles) {
       positions.push(p.position.x, p.position.y, p.position.z);
-      sizes.push(p.size);
       colours.push(p.colour.r, p.position.g, p.position.b, p.alpha);
+      sizes.push(p.size);
+      angles.push(p.rotation);
     }
 
     // geometry에 업데이트
@@ -124,13 +203,31 @@ class ParticleSystem {
       'size', new THREE.Float32BufferAttribute(sizes, 1));
     this._geometry.setAttribute(
       'colour', new THREE.Float32BufferAttribute(colours, 4));
+    this._geometry.setAttribute(
+      'angle', new THREE.Float32BufferAttribute(angles, 1));
 
     this._geometry.attributes.position.needsUpdate = true;
     this._geometry.attributes.size.needsUpdate = true;
     this._geometry.attributes.colour.needsUpdate = true;
+    this._geometry.attributes.angle.needsUpdate = true;
   }
 
   _UpdateParticles(timeElapsed) {
+    for(let p of this._particles) {
+      p.life -= timeElapsed;
+    }
+
+    this._particles = this._particles.filter(p => {
+      return p.life > 0.0;
+    });
+
+    for (let p of this._particles) {
+      const t = 1.0 - p.life / 5.0;
+
+      p.alpha = this._alphaSpline.Get(t);
+      p.colour.copy(this._colourSpline.Get(t));
+    }
+
     this._particles.sort((a,b) => {
       // 카메라를 particle에 추가하여 가장 가까운 거리에서
       const d1 = this._camera.position.distanceTo(a.position);
