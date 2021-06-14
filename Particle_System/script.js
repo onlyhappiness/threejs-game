@@ -36,6 +36,7 @@ uniform sampler2D diffuseTexture;
 varying vec4 vColour;
 varying vec2 vAngle;
 
+
 void main() {
   vec2 coords = (gl_PointCoord - 0.5) * mat2(vAngle.x, vAngle.y, -vAngle.y, vAngle.x) + 0.5;
   gl_FragColor = texture2D(diffuseTexture, coords) * vColour;
@@ -56,7 +57,7 @@ class LinearSpline {
   Get(t) {
     let p1 = 0;
   
-    for (let i=0; i<this._points.length; i++) {
+    for (let i = 0; i < this._points.length; i++) {
       if (this._points[i][0] >= t) {
         break;
       }
@@ -94,7 +95,7 @@ class ParticleSystem {
       uniforms: uniforms,
       vertexShader: _VS,
       fragmentShader: _FS,
-      blending: THREE.CustomBlending,
+      blending: THREE.AdditiveBlending,
       depthTest: true,
       depthWrite: false,
       transparent: true,
@@ -133,15 +134,18 @@ class ParticleSystem {
       return c.lerp(b, t);
     });
     this._colourSpline.AddPoint(0.0, new THREE.Color(0xFF0000));
-    this._colourSpline.AddPoint(0.0, new THREE.Color(0xFF0000));
-    this._colourSpline.AddPoint(0.0, new THREE.Color(0xFF0000));
-    this._colourSpline.AddPoint(0.0, new THREE.Color(0xFF0000));
-    this._colourSpline.AddPoint(0.0, new THREE.Color(0xFF0000));
-    this._colourSpline.AddPoint(0.0, new THREE.Color(0xFF0000));
+    this._colourSpline.AddPoint(1.0, new THREE.Color(0xFF0000));
+
+    this._sizeSpline = new LinearSpline((t, a, b) => {
+      return a + t * (b - a);
+    });
+    this._sizeSpline.AddPoint(0.0, 1.0);
+    this._sizeSpline.AddPoint(0.5, 5.0);
+    this._sizeSpline.AddPoint(1.0, 1.0);
 
     document.addEventListener('keyup', (e) => this._onKeyUp(e), false);
     
-    this._AddParticles();
+    //this._AddParticles();
     this._UpdateGeometry();
   }
 
@@ -156,21 +160,22 @@ class ParticleSystem {
 
   // particle 추가 함수
   _AddParticles(timeElapsed) {
-    // 10개의 입자를 만들어서 각각 임의의 위치에서 시작
     for (let i=0; i<20; i++) {
-      //const life = (Math.random() * 0.75 + 0.25) * 10.0;
+      const life = (Math.random() * 0.75 + 0.25) * 10.0;
       this._particles.push({
         position: new THREE.Vector3(
           (Math.random() * 2 - 1) * 1.0,
           (Math.random() * 2 - 1) * 1.0,
           (Math.random() * 2 - 1) * 1.0),
         // 입자 크기를 무작위로 
-        size: Math.random() * 2.0,
+        size: Math.random() * 1.2,
         // rgb를 랜덤화하여 색상 변경
-        colour: new THREE.Color(Math.random(), Math.random(), Math.random()),
-        alpha: Math.random(),
-        life: 5.0, 
+        colour: new THREE.Color(),
+        alpha: 1.0,
+        life: life, 
+        maxLife: life,
         rotation: Math.random() * 2.0 * Math.PI,
+        velocity: new THREE.Vector3(0, -15, 0),
       });
     }
   }
@@ -191,7 +196,7 @@ class ParticleSystem {
     for (let p of this._particles) {
       positions.push(p.position.x, p.position.y, p.position.z);
       colours.push(p.colour.r, p.position.g, p.position.b, p.alpha);
-      sizes.push(p.size);
+      sizes.push(p.currentSize);
       angles.push(p.rotation);
     }
 
@@ -222,10 +227,22 @@ class ParticleSystem {
     });
 
     for (let p of this._particles) {
-      const t = 1.0 - p.life / 5.0;
+      const t = 1.0 - p.life / p.maxLife;
 
+      p.rotation += timeElapsed * 0.5;
       p.alpha = this._alphaSpline.Get(t);
+      p.currentSize = p.size * this._sizeSpline.Get(t);
       p.colour.copy(this._colourSpline.Get(t));
+
+      p.position.add(p.velocity.clone().multiplyScalar(timeElapsed));
+
+      // 프레임 시간을 곱하고 드래그를 추가.
+      const drag = p.velocity.clone();
+      drag.multiplyScalar(timeElapsed * 0.25);
+      drag.x = Math.sign(p.velocity.x) * Math.min(Math.abs(drag.x), Math.abs(p.velocity.x));
+      drag.y = Math.sign(p.velocity.y) * Math.min(Math.abs(drag.y), Math.abs(p.velocity.y));
+      drag.z = Math.sign(p.velocity.z) * Math.min(Math.abs(drag.z), Math.abs(p.velocity.z));
+      p.velocity.sub(drag);
     }
 
     this._particles.sort((a,b) => {
@@ -247,6 +264,7 @@ class ParticleSystem {
 
   // 가장 먼 곳에서 입자를 정렬
   Step(timeElapsed) {
+    this._AddParticles(timeElapsed);
     this._UpdateParticles(timeElapsed);
     this._UpdateGeometry();
   }
@@ -284,7 +302,8 @@ class ParticleSystemDemo {
 
     let light = new THREE.DirectionalLight(0xFFFFFF, 1.0);
     light.position.set(20, 100, 10);
-    light.target.position.set(0,0,0);
+    light.target.position.set(0, 0, 0);
+    light.castShadow = true;
     light.shadow.bias = -0.001;
     light.shadow.mapSize.width = 2048;
     light.shadow.mapSize.height = 2048;
@@ -308,18 +327,18 @@ class ParticleSystemDemo {
 
     const loader = new THREE.CubeTextureLoader();
     const texture = loader.load([
-      './resources/posx.jpg',
-      './resources/negx.jpg',
-      './resources/posy.jpg',
-      './resources/negy.jpg',
-      './resources/posz.jpg',
-      './resources/negz.jpg',
+        './resources/posx.jpg',
+        './resources/negx.jpg',
+        './resources/posy.jpg',
+        './resources/negy.jpg',
+        './resources/posz.jpg',
+        './resources/negz.jpg',
     ]);
     this._scene.background = texture;
 
     this._particles = new ParticleSystem({
-      parent: this._scene,
-      camera: this._camera,
+        parent: this._scene,
+        camera: this._camera,
     });
 
     this._LoadModel();
@@ -353,8 +372,15 @@ class ParticleSystemDemo {
       this._RAF();
 
       this._threejs.render(this._scene, this._camera);
-      
+      this._Step(t - this._previousRAF);
+      this._previousRAF = t;
     });
+  }
+
+  _Step(timeElapsed) {
+    const timeElapsedS = timeElapsed * 0.001;
+
+    this._particles.Step(timeElapsedS);
   }
 }
 
