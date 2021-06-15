@@ -60,7 +60,6 @@ class LoadModelDemo {
 
     // const loader = new THREE.CubeTextureLoader();
     // const texture = loader.load([
-
     // ]);
     // this._scene.background = texture;
 
