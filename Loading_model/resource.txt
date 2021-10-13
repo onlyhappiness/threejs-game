@@ -1,6 +1,0 @@
-Sketchfab
-
-mixamo
-
-// 그래픽이 낮은 폴리 모델
-poly.google.com 
